@@ -1,3 +1,7 @@
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -6,6 +10,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 
 #define VERSION "1.0"
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -22,11 +27,18 @@ enum key
     PAGE_UP,
     PAGE_DOWN
 };
+typedef struct erow
+{
+    int size;
+    char *chars;
+} erow;
 struct config 
 {
     int x, y;
     int rows;
     int cols;
+    int numrows;
+    erow *row;
     struct termios orig_termios;
 };
 struct config C;
@@ -157,6 +169,33 @@ int getWindowSize(int *rows, int *cols)
         return 0;
     }
 }
+void appendRow(char *s, size_t len)
+{
+    C.row = realloc(C.row, sizeof(erow) * (C.numrows + 1));
+    int at = C.numrows;
+    C.row[at].size = len;
+    C.row[at].chars = malloc(len + 1);
+    memcpy(C.row[at].chars, s, len);
+    C.row[at].chars[len] = '\0';
+    C.numrows++;
+}
+void open(char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if(!fp)
+        kill("fopen");
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    while ((linelen = getline(&line, &linecap, fp)) != -1)
+    {
+        while(linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
+            linelen--;
+        appendRow(line, linelen);
+    }
+    free(line);
+    fclose(fp);
+}   
 struct abuf
 {
     char *b;
@@ -228,25 +267,35 @@ void drawRows(struct abuf *ab)
     int i;
     for (i = 0; i < C.rows; i++)
     {
-        if(i == C.rows/3)
+        if (i >= C.numrows)
         {
-            char welcome[100];
-            int welcomelen = snprintf(welcome, sizeof(welcome), "Atlas editor -- version %s", VERSION);
-            if(welcomelen > C.cols)
-                welcomelen = C.cols;
-            int padding = (C.cols - welcomelen)/2;
-            if (padding)
+            if(C.numrows == 0 && i == C.rows/3)
             {
-                abAppend(ab, "~", 1);
-                padding--;
+                char welcome[100];
+                    int welcomelen = snprintf(welcome, sizeof(welcome), "Atlas editor -- version %s", VERSION);
+                if(welcomelen > C.cols)
+                    welcomelen = C.cols;
+                int padding = (C.cols - welcomelen)/2;
+                if (padding)
+                {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--)
+                    abAppend(ab, " ", 1);
+                abAppend(ab, welcome, welcomelen);
             }
-            while (padding--)
-                abAppend(ab, " ", 1);
-            abAppend(ab, welcome, welcomelen);
+            else
+                abAppend(ab, "~", 1);
         }
         else
-            abAppend(ab, "~", 1);
-        abAppend(ab, "\x2b[K", 3);
+        {
+            int len = C.row[i].size;
+            if(len > C.cols)
+                len = C.cols;
+            abAppend(ab, C.row[i].chars, len);
+        }
+        abAppend(ab, "\x1b[K", 3);
         if (i < C.rows - 1)
             abAppend(ab, "\r\n", 2);
     }
@@ -271,12 +320,17 @@ void init()
 {
     C.x = 0;
     C.y = 0;
+    C.numrows = 0;
+    C.row = NULL;
     if(getWindowSize(&C.rows, &C.cols) == -1)
         kill("getWindowSize");
 }
-void main()
+void main(int argc, char *argv[])
 {
     allowRaw();
+    init();
+    if(argc >= 2)
+        open(argv[1]);
     while (1)
     {    
         refresh();
