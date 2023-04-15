@@ -309,6 +309,14 @@ void processKey()
                             break;
         case PAGE_UP:
         case PAGE_DOWN:     {
+                                if(c == PAGE_UP)
+                                    C.y = C.rowoffset;
+                                else if(c == PAGE_DOWN)
+                                {    
+                                    C.y = C.rowoffset + C.rows - 1;
+                                    if(C.y > C.numrows)
+                                        C.y = C.numrows;    
+                                }
                                 int times = C.rows;
                                 while(times--)
                                     moveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
