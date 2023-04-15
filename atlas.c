@@ -45,6 +45,7 @@ struct config
     int rowoffset;
     int columnoffset;
     erow *row;
+    char *filename;
     struct termios orig_termios;
 };
 struct config C;
@@ -225,6 +226,8 @@ void appendRow(char *s, size_t len)
 }
 void open(char *filename)
 {
+    free(C.filename);
+    C.filename = strdup(filename);
     FILE *fp = fopen(filename, "r");
     if(!fp)
         kill("fopen");
@@ -305,7 +308,8 @@ void processKey()
                             break;
         case HOME:          C.x = 0;
                             break;
-        case END:           C.x = C.cols - 1;
+        case END:           if(C.y < C.numrows)
+                                C.x = C.row[C.y].size;
                             break;
         case PAGE_UP:
         case PAGE_DOWN:     {
@@ -383,9 +387,32 @@ void drawRows(struct abuf *ab)
             abAppend(ab, &C.row[filerow].render[C.columnoffset], len);
         }
         abAppend(ab, "\x1b[K", 3);
-        if (i < C.rows - 1)
-            abAppend(ab, "\r\n", 2);
+        abAppend(ab, "\r\n", 2);
     }
+}
+void drawStatusBar(struct abuf *ab)
+{
+    abAppend(ab, "\x1n[7m", 4);
+    char status[100], rstatus[100];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines", C.filename ? C.filename : "[No Name]", C.numrows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", C.y + 1, C.numrows);
+    if(len > C.cols)
+        len = C.cols;
+    abAppend(ab, status, len);
+    while(len < C.cols)
+    {
+        if(C.cols - len == rlen)
+        {
+            abAppend(ab, status, len);
+            break;
+        }
+        else
+        {
+            abAppend(ab, " ", 1);
+            len++;
+        }
+    }
+    abAppend(ab, "\x1b[m", 3);
 }
 void refresh()
 {
@@ -394,6 +421,7 @@ void refresh()
     abAppend(&ab, "\x1b[?25l", 6); //hide cursor when repainting
     abAppend(&ab, "\x1b[H", 3);
     drawRows(&ab);
+    drawStatusBar(&ab);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, (C.rx - C.columnoffset) + 1);
@@ -413,8 +441,10 @@ void init()
     C.rowoffset = 0;
     C.columnoffset = 0;
     C.row = NULL;
+    C.filename = NULL;
     if(getWindowSize(&C.rows, &C.cols) == -1)
         kill("getWindowSize");
+    C.rows -= 1;
 }
 void main(int argc, char *argv[])
 {
