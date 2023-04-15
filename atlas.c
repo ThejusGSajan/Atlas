@@ -38,6 +38,7 @@ struct config
     int rows;
     int cols;
     int numrows;
+    int rowoffset;
     erow *row;
     struct termios orig_termios;
 };
@@ -227,7 +228,7 @@ void moveCursor(int key)
         case ARROW_LEFT:    if(C.x != 0)
                                 C.x--;
                             break;
-        case ARROW_DOWN:    if(C.y != C.rows - 1)
+        case ARROW_DOWN:    if(C.y < C.numrows)
                                 C.y++;
                             break;
         case ARROW_RIGHT:   if(C.x != C.cols -1)
@@ -262,12 +263,22 @@ void processKey()
                             break;
     }
 }
+void scroll()
+{
+    //if cursor is above visible window, scroll up to cursor location
+    if(C.y < C.rowoffset)
+        C.rowoffset = C.y;
+    //if cursor is past the bottom of visible window
+    if(C.y >= C.rowoffset + C.rows)
+        C.rowoffset = C.y - C.rows + 1;
+}
 void drawRows(struct abuf *ab)
 {
     int i;
     for (i = 0; i < C.rows; i++)
     {
-        if (i >= C.numrows)
+        int filerow = i + C.rowoffset;
+        if (filerow >= C.numrows)
         {
             if(C.numrows == 0 && i == C.rows/3)
             {
@@ -290,10 +301,10 @@ void drawRows(struct abuf *ab)
         }
         else
         {
-            int len = C.row[i].size;
+            int len = C.row[filerow].size;
             if(len > C.cols)
                 len = C.cols;
-            abAppend(ab, C.row[i].chars, len);
+            abAppend(ab, C.row[filerow].chars, len);
         }
         abAppend(ab, "\x1b[K", 3);
         if (i < C.rows - 1)
@@ -302,13 +313,14 @@ void drawRows(struct abuf *ab)
 }
 void refresh()
 {
+    scroll();
     struct abuf ab = ABUF_INIT;
     abAppend(&ab, "\x1b[?25l", 6); //hide cursor when repainting
     abAppend(&ab, "\x1b[H", 3);
     drawRows(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", C.y + 1, C.x + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, C.x + 1);
     abAppend(&ab, buf, strlen(buf));
 
     //abAppend(&ab, "\x1b[H", 3);
@@ -321,6 +333,7 @@ void init()
     C.x = 0;
     C.y = 0;
     C.numrows = 0;
+    C.rowoffset = 0;
     C.row = NULL;
     if(getWindowSize(&C.rows, &C.cols) == -1)
         kill("getWindowSize");
