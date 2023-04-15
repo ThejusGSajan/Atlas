@@ -2,9 +2,11 @@
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
+#include <time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -46,6 +48,8 @@ struct config
     int columnoffset;
     erow *row;
     char *filename;
+    char statmssg[100];
+    time_t statmssg_time;
     struct termios orig_termios;
 };
 struct config C;
@@ -392,7 +396,7 @@ void drawRows(struct abuf *ab)
 }
 void drawStatusBar(struct abuf *ab)
 {
-    abAppend(ab, "\x1n[7m", 4);
+    abAppend(ab, "\x1b[7m", 4);
     char status[100], rstatus[100];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines", C.filename ? C.filename : "[No Name]", C.numrows);
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", C.y + 1, C.numrows);
@@ -413,6 +417,16 @@ void drawStatusBar(struct abuf *ab)
         }
     }
     abAppend(ab, "\x1b[m", 3);
+    abAppend(ab, "\r\n", 2);
+}
+void drawMssgBar(struct abuf *ab)
+{
+    abAppend(ab, "\x1b[K", 3);
+    int msglen = strlen(C.statmssg);
+    if(msglen > C.cols)
+        msglen = C.cols;
+    if(msglen && time(NULL) - C.statmssg_time < 5)
+        abAppend(ab, C.statmssg, msglen);
 }
 void refresh()
 {
@@ -422,6 +436,7 @@ void refresh()
     abAppend(&ab, "\x1b[H", 3);
     drawRows(&ab);
     drawStatusBar(&ab);
+    drawMssgBar(&ab);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, (C.rx - C.columnoffset) + 1);
@@ -431,6 +446,14 @@ void refresh()
     abAppend(&ab, "\x1b[?25h", 6); //show cursor
     write(STDOUT_FILENO, ab.b, ab.len);
     abFree(&ab);
+}
+void setStatMssg(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(C.statmssg, sizeof(C.statmssg), fmt, ap);
+    va_end(ap);
+    C.statmssg_time = time(NULL);
 }
 void init()
 {
@@ -442,9 +465,11 @@ void init()
     C.columnoffset = 0;
     C.row = NULL;
     C.filename = NULL;
+    C.statmssg[0] = '\0';
+    C.statmssg_time = 0;
     if(getWindowSize(&C.rows, &C.cols) == -1)
         kill("getWindowSize");
-    C.rows -= 1;
+    C.rows -= 2;
 }
 void main(int argc, char *argv[])
 {
@@ -452,6 +477,7 @@ void main(int argc, char *argv[])
     init();
     if(argc >= 2)
         open(argv[1]);
+    setStatMssg("HELP: Ctrl-Q = quit");
     while (1)
     {    
         refresh();
