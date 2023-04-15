@@ -39,6 +39,7 @@ struct config
     int cols;
     int numrows;
     int rowoffset;
+    int columnoffset;
     erow *row;
     struct termios orig_termios;
 };
@@ -220,6 +221,7 @@ void abFree(struct abuf *ab)
 
 void moveCursor(int key)
 {
+    erow *row = (C.y >= C.numrows) ? NULL : &C.row[C.y];
     switch (key)
     {
         case ARROW_UP:      if(C.y != 0)
@@ -227,14 +229,28 @@ void moveCursor(int key)
                             break;
         case ARROW_LEFT:    if(C.x != 0)
                                 C.x--;
+                            else if(C.y > 0)
+                            {
+                                C.y--;
+                                C.x = C.row[C.y].size;
+                            }
                             break;
         case ARROW_DOWN:    if(C.y < C.numrows)
                                 C.y++;
                             break;
-        case ARROW_RIGHT:   if(C.x != C.cols -1)
+        case ARROW_RIGHT:   if(row && C.x < row->size)
                                 C.x++;
+                            else if(row && C.x == row->size)
+                            {
+                                C.y++;
+                                C.x = 0;
+                            }
                             break;
     }
+    row = (C.y >= C.numrows) ? NULL : &C.row[C.y];
+    int rowlen = row ? row->size : 0;
+    if(C.x > rowlen)
+        C.x = rowlen;
 }
 void processKey()
 {
@@ -268,9 +284,16 @@ void scroll()
     //if cursor is above visible window, scroll up to cursor location
     if(C.y < C.rowoffset)
         C.rowoffset = C.y;
-    //if cursor is past the bottom of visible window
+    //if cursor is past the bottom of visible window, add a new line to the screen from the bottom
     if(C.y >= C.rowoffset + C.rows)
         C.rowoffset = C.y - C.rows + 1;
+    
+    //if cursor is within visible window, scroll to cursor location
+    if(C.x < C.columnoffset)
+        C.columnoffset = C.x;
+    //if cursor is past the visible window to the right, add a new column to the screen from the right
+    if(C.x >= C.columnoffset + C.cols)
+        C.columnoffset = C.x - C.cols + 1;
 }
 void drawRows(struct abuf *ab)
 {
@@ -301,10 +324,10 @@ void drawRows(struct abuf *ab)
         }
         else
         {
-            int len = C.row[filerow].size;
-            if(len > C.cols)
-                len = C.cols;
-            abAppend(ab, C.row[filerow].chars, len);
+            int len = C.row[filerow].size - C.columnoffset;
+            if(len < 0)
+                len = 0;
+            abAppend(ab, &C.row[filerow].chars[C.columnoffset], len);
         }
         abAppend(ab, "\x1b[K", 3);
         if (i < C.rows - 1)
@@ -320,7 +343,7 @@ void refresh()
     drawRows(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, C.x + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, (C.x - C.columnoffset) + 1);
     abAppend(&ab, buf, strlen(buf));
 
     //abAppend(&ab, "\x1b[H", 3);
@@ -334,6 +357,7 @@ void init()
     C.y = 0;
     C.numrows = 0;
     C.rowoffset = 0;
+    C.columnoffset = 0;
     C.row = NULL;
     if(getWindowSize(&C.rows, &C.cols) == -1)
         kill("getWindowSize");
