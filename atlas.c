@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #define VERSION "1.0"
+#define TAB_SPACE 4
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define ABUF_INIT {NULL, 0}
 enum key
@@ -30,11 +31,14 @@ enum key
 typedef struct erow
 {
     int size;
+    int rsize;
     char *chars;
+    char *render;
 } erow;
 struct config 
 {
     int x, y;
+    int rx;
     int rows;
     int cols;
     int numrows;
@@ -171,6 +175,40 @@ int getWindowSize(int *rows, int *cols)
         return 0;
     }
 }
+int rowXtoRx(erow *row, int cx)
+{
+    int i, rx = 0;
+    for(i = 0; i < cx; i++)
+    {
+        if(row->chars[i] == '\t')
+            rx += (TAB_SPACE - 1) - (rx % TAB_SPACE);
+        rx++;
+    }
+    return rx;
+}
+void updateRow(erow *row)
+{
+    int tabs = 0;
+    int i;
+    for(i = 0; i < row->size; i++)
+        if(row->chars[i] == '\t')
+            tabs++;
+    free(row->render);
+    row->render = malloc(row->size + tabs*(TAB_SPACE - 1) + 1);
+
+    int idx = 0;
+    for(i = 0; i < row->size; i++)
+        if(row->chars[i] == '\t')
+        {
+            row->render[idx++] = ' ';
+            while(idx % TAB_SPACE != 0)
+                row->render[idx++] = ' ';
+        }
+        else
+            row->render[idx++] = row->chars[i];
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
 void appendRow(char *s, size_t len)
 {
     C.row = realloc(C.row, sizeof(erow) * (C.numrows + 1));
@@ -180,6 +218,10 @@ void appendRow(char *s, size_t len)
     memcpy(C.row[at].chars, s, len);
     C.row[at].chars[len] = '\0';
     C.numrows++;
+
+    C.row[at].rsize = 0;
+    C.row[at].render = NULL;
+    updateRow(&C.row[at]);
 }
 void open(char *filename)
 {
@@ -281,6 +323,9 @@ void processKey()
 }
 void scroll()
 {
+    C.rx = 0;
+    if(C.y < C.numrows)
+        C.rx = rowXtoRx(&C.row[C.y], C.x);
     //if cursor is above visible window, scroll up to cursor location
     if(C.y < C.rowoffset)
         C.rowoffset = C.y;
@@ -289,11 +334,11 @@ void scroll()
         C.rowoffset = C.y - C.rows + 1;
     
     //if cursor is within visible window, scroll to cursor location
-    if(C.x < C.columnoffset)
-        C.columnoffset = C.x;
+    if(C.rx < C.columnoffset)
+        C.columnoffset = C.rx;
     //if cursor is past the visible window to the right, add a new column to the screen from the right
-    if(C.x >= C.columnoffset + C.cols)
-        C.columnoffset = C.x - C.cols + 1;
+    if(C.rx >= C.columnoffset + C.cols)
+        C.columnoffset = C.rx - C.cols + 1;
 }
 void drawRows(struct abuf *ab)
 {
@@ -324,10 +369,10 @@ void drawRows(struct abuf *ab)
         }
         else
         {
-            int len = C.row[filerow].size - C.columnoffset;
+            int len = C.row[filerow].rsize - C.columnoffset;
             if(len < 0)
                 len = 0;
-            abAppend(ab, &C.row[filerow].chars[C.columnoffset], len);
+            abAppend(ab, &C.row[filerow].render[C.columnoffset], len);
         }
         abAppend(ab, "\x1b[K", 3);
         if (i < C.rows - 1)
@@ -343,7 +388,7 @@ void refresh()
     drawRows(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, (C.x - C.columnoffset) + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (C.y - C.rowoffset) + 1, (C.rx - C.columnoffset) + 1);
     abAppend(&ab, buf, strlen(buf));
 
     //abAppend(&ab, "\x1b[H", 3);
@@ -355,6 +400,7 @@ void init()
 {
     C.x = 0;
     C.y = 0;
+    C.rx = 0;
     C.numrows = 0;
     C.rowoffset = 0;
     C.columnoffset = 0;
