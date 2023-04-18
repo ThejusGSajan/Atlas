@@ -60,6 +60,8 @@ struct config C;
 
 //prototypes
 void setStatMssg(const char *fmt, ...);
+void refresh();
+char *prompts(char *prompt);
 
 
 void kill(const char *s)
@@ -370,7 +372,14 @@ void fileOpen(char *filename)
 void fileSave()
 {
     if(C.filename == NULL)
-        return;
+    {
+        C.filename = prompts("Save as: %s (ESC to cancel)");
+        if(C.filename == NULL)
+        {
+            setStatMssg("Save cancelled.");
+            return;
+        }
+    }    
     int l;
     char *buffer = rowsToString(&l);
     int fd = open(C.filename, O_RDWR | O_CREAT, 0644);
@@ -411,6 +420,43 @@ void abFree(struct abuf *ab)
     free(ab -> b);
 }
 
+char *prompts(char *prompt)
+{
+    size_t buffer_size = 128;
+    char *buffer = malloc(buffer_size);
+    size_t buffer_length = 0;
+    buffer[0] = '\0';
+    while(1)
+    {
+        setStatMssg(prompt, buffer);
+        refresh();
+        int c = readKey();
+        if(c == DEL || c == CTRL_KEY('h') || c == BACKSPACE)
+            if(buffer_length != 0)
+                buffer[--buffer_length] = '\0';
+        else if(c == '\x1b')
+        {
+            setStatMssg("");
+            free(buffer);
+            return NULL;
+        }
+        else if(c == '\r')
+        {
+            setStatMssg("");
+            return buffer;
+        }
+        else if(!iscntrl(c) && c < 128)
+        {
+            if(buffer_length == buffer_size - 1)
+            {
+                buffer_size *= 2;
+                buffer = realloc(buffer, buffer_size);
+            }
+            buffer[buffer_length++] = c;
+            buffer[buffer_length] = '\0';
+        }
+    }
+}
 void moveCursor(int key)
 {
     erow *row = (C.y >= C.numrows) ? NULL : &C.row[C.y];
