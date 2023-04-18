@@ -5,6 +5,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 
 #define VERSION "1.0"
 #define TAB_SPACE 4
+#define FORCE_QUIT 2
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define ABUF_INIT {NULL, 0}
 enum key
@@ -24,6 +26,7 @@ enum key
     ARROW_LEFT = 1000,
     ARROW_DOWN,
     ARROW_RIGHT,
+    BACKSPACE = 127,
     DEL,
     HOME,
     END,
@@ -47,12 +50,18 @@ struct config
     int rowoffset;
     int columnoffset;
     erow *row;
+    int modified;
     char *filename;
     char statmssg[100];
     time_t statmssg_time;
     struct termios orig_termios;
 };
 struct config C;
+
+//prototypes
+void setStatMssg(const char *fmt, ...);
+
+
 void kill(const char *s)
 {
     write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -214,21 +223,131 @@ void updateRow(erow *row)
     row->render[idx] = '\0';
     row->rsize = idx;
 }
-void appendRow(char *s, size_t len)
+void insertRow(int at, char *s, size_t len)
 {
+    if(at < 0 || at > C.numrows)
+        return;
     C.row = realloc(C.row, sizeof(erow) * (C.numrows + 1));
-    int at = C.numrows;
+    memmove(&C.row[at + 1], &C.row[at], sizeof(erow) * (C.numrows - at));
     C.row[at].size = len;
     C.row[at].chars = malloc(len + 1);
     memcpy(C.row[at].chars, s, len);
     C.row[at].chars[len] = '\0';
-    C.numrows++;
+    
+
 
     C.row[at].rsize = 0;
     C.row[at].render = NULL;
     updateRow(&C.row[at]);
+
+    C.numrows++;
+    C.modified++;
 }
-void open(char *filename)
+void freeRow(erow *row)
+{
+    free(row->render);
+    free(row->chars);
+}
+void deleteRow(int at)
+{
+    if(at < 0 || at >= C.numrows)
+        return;
+    freeRow(&C.row[at]);
+    memmove(&C.row[at], &C.row[at + 1], sizeof(erow) * (C.numrows - at + 1));
+    C.numrows--;
+    C.modified++;
+}
+void rowInsertChar(erow *row, int at, int c)
+{
+    if (at < 0 || at > row->size)
+        at = row->size;
+    row->chars = realloc(row->chars, row->size + 2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at] = c;
+    updateRow(row);
+    C.modified++;
+}
+void rowAppendString(erow *row, char *s, size_t l)
+{
+    row->chars = realloc(row->chars, row->size + l + 1);
+    memcpy(&row->chars[row->size], s, l);
+    row->size += l;
+    row->chars[row->size] = '\0';
+    updateRow(row);
+    C.modified++;
+}
+void rowDeleteChar(erow *row, int at)
+{
+    if(at < 0 || at >= row->size)
+        return;
+    memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+    row->size--;
+    updateRow(row);
+    C.modified++;
+}
+void insertChar(int c)
+{
+    if(C.y == C.numrows)
+       insertRow(C.numrows, "", 0);
+    rowInsertChar(&C.row[C.y], C.x, c);
+    C.x++;
+}
+void insertNewLine()
+{
+    if(C.x == 0)
+        insertRow(C.y, "", 0);
+    else
+    {
+        erow *row = &C.row[C.y];
+        insertRow(C.y + 1, &row->chars[C.x], row->size - C.x);
+        row = &C.row[C.y];
+        row->size = C.x;
+        row->chars[row->size] = '\0';
+        updateRow(row);
+    }
+    C.y++;
+    C.x = 0;
+}
+void deleteChar()
+{
+    if(C.y == C.numrows)
+        return;
+    if(C.x == 0 && C.y == 0)
+        return;
+    erow *row = &C.row[C.y];
+    if (C.x > 0)
+    {
+        rowDeleteChar(row, C.x - 1);
+        C.x--;
+    }
+    else
+    {
+        C.x = C.row[C.y - 1].size;
+        rowAppendString(&C.row[C.y - 1], row->chars, row->size);
+        deleteRow(C.y);
+        C.y--;
+    }
+}
+char *rowsToString(int *buffer_len)
+{
+    int i, total_len = 0;
+    for(i = 0; i < C.numrows; i++)
+        total_len += C.row[i].size + 1;
+    *buffer_len = total_len;
+
+    char *buffer = malloc(total_len);
+    char *p = buffer;
+    for(i = 0; i < C.numrows; i++)
+    {
+        memcpy(p, C.row[i].chars, C.row[i].size);
+        p += C.row[i].size;
+        *p = '\n';
+        p++;
+    }
+    return buffer;
+}
+void fileOpen(char *filename)
 {
     free(C.filename);
     C.filename = strdup(filename);
@@ -242,11 +361,35 @@ void open(char *filename)
     {
         while(linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
             linelen--;
-        appendRow(line, linelen);
+        insertRow(C.numrows, line, linelen);
     }
     free(line);
     fclose(fp);
+    C.modified = 0;
 }   
+void fileSave()
+{
+    if(C.filename == NULL)
+        return;
+    int l;
+    char *buffer = rowsToString(&l);
+    int fd = open(C.filename, O_RDWR | O_CREAT, 0644);
+    if(fd != -1)
+    {
+        if(ftruncate(fd, l) != -1)
+            if(write(fd, buffer, l) == l)
+            {
+                close(fd);
+                C.modified = 0;
+                free(buffer);
+                setStatMssg("%d bytes written to disk", l);
+                return;
+            }
+        close(fd);
+    }
+    free(buffer);
+    setStatMssg("Can't save! I/O error: %s", strerror(errno));
+}
 struct abuf
 {
     char *b;
@@ -303,17 +446,34 @@ void moveCursor(int key)
 }
 void processKey()
 {
+    static int quit_times = FORCE_QUIT;
     int c = readKey();
     switch(c)
     {
-        case CTRL_KEY('q'): write(STDOUT_FILENO, "\x1b[2J", 4);
+        case '\r':          insertNewLine();
+                            break;
+        case CTRL_KEY('q'): if(C.modified && quit_times > 0)
+                            {
+                                setStatMssg("!!File has UNSAVED changes!! Press Ctrl-Q %d more times to force quit without saving changes.", quit_times);
+                                quit_times--;
+                                return;
+                            }
+                            write(STDOUT_FILENO, "\x1b[2J", 4);
                             write(STDOUT_FILENO, "\x1b[H", 3);
                             exit(0);
+                            break;
+        case CTRL_KEY('s'): fileSave();
                             break;
         case HOME:          C.x = 0;
                             break;
         case END:           if(C.y < C.numrows)
                                 C.x = C.row[C.y].size;
+                            break;
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL:           if(c == DEL)
+                                moveCursor(ARROW_RIGHT);
+                            deleteChar();
                             break;
         case PAGE_UP:
         case PAGE_DOWN:     {
@@ -335,7 +495,12 @@ void processKey()
         case ARROW_DOWN:
         case ARROW_RIGHT:   moveCursor(c);
                             break;
+        case CTRL_KEY('l'):
+        case '\x1b':        break;
+        default:            insertChar(c);
+                            break;
     }
+    quit_times = FORCE_QUIT;
 }
 void scroll()
 {
@@ -398,7 +563,7 @@ void drawStatusBar(struct abuf *ab)
 {
     abAppend(ab, "\x1b[7m", 4);
     char status[100], rstatus[100];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines", C.filename ? C.filename : "[No Name]", C.numrows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", C.filename ? C.filename : "[No Name]", C.numrows, C.modified ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", C.y + 1, C.numrows);
     if(len > C.cols)
         len = C.cols;
@@ -464,6 +629,7 @@ void init()
     C.rowoffset = 0;
     C.columnoffset = 0;
     C.row = NULL;
+    C.modified = 0;
     C.filename = NULL;
     C.statmssg[0] = '\0';
     C.statmssg_time = 0;
@@ -476,8 +642,8 @@ void main(int argc, char *argv[])
     allowRaw();
     init();
     if(argc >= 2)
-        open(argv[1]);
-    setStatMssg("HELP: Ctrl-Q = quit");
+        fileOpen(argv[1]);
+    setStatMssg("HELP: Ctrl-S | Ctrl-Q = quit");
     while (1)
     {    
         refresh();
